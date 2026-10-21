@@ -1,0 +1,24 @@
+[project]
+name = "final-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = 'DESKTOP-UM7CPNQ\USER', email = "michael63@naver.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pandas>=3.0.6",
+    "plotly>=7.1.0",
+    "seaborn>=0.13.2",
+    "streamlit>=1.66.0",
+]
+
+[project.scripts]
+final-project = "final_project:main"
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13.0"]
+build-backend = "uv_build"
