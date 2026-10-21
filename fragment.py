@@ -17,3 +17,4 @@ def load_dataset(filename):
         return None
     except UnicodeDecodeError:
         return pd.read_csv(TARGET_PATH, encoding = 'euc-kr')
+
