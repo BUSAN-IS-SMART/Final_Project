@@ -221,3 +221,8 @@ __marimo__/
 
 # CUSTOM
 models
+
+
+pyproject.toml
+README.md
+uv.lock
