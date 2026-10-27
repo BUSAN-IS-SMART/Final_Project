@@ -226,3 +226,4 @@ models
 pyproject.toml
 README.md
 uv.lock
+.idea/
