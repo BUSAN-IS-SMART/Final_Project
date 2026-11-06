@@ -1,8 +1,10 @@
+import csv
 import json
 import os
 import re
 from html import unescape
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import pandas as pd
 import plotly.express as px
@@ -10,6 +12,49 @@ import plotly.express as px
 ROOT = Path(__file__).resolve().parent
 EDA = Path(os.getenv("BUSAN_EDA_DIR", ROOT / "EDA"))
 NOTEBOOK = EDA / "dashboard0.ipynb"
+DATA_SNAPSHOT = ROOT / "data" / "dashboard_snapshot.csv"
+SNAPSHOT_METRICS = ("occupancy", "productivity", "average_wait", "monthly_slots")
+SNAPSHOT_COLUMNS = ("metric", "month", "terminal", "berth", "value")
+
+
+def read_dashboard_data(path, modified_time):
+    series = {metric: [] for metric in SNAPSHOT_METRICS}
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        if reader.fieldnames != list(SNAPSHOT_COLUMNS):
+            raise ValueError("대시보드 CSV의 열 구성이 맞지 않습니다.")
+        for row in reader:
+            metric = row["metric"]
+            value = float(row["value"]) if row["value"] else None
+            point = [row["month"], row["terminal"]]
+            if metric == "monthly_slots":
+                point.append(row["berth"])
+            series[metric].append([*point, value])
+
+    if not all(series.values()):
+        raise ValueError("대시보드 CSV에 필요한 지표가 빠져 있습니다.")
+    return series
+
+
+def export_dashboard_data(source, target):
+    series = read_eda_outputs(source, source.stat().st_mtime_ns)["series"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    file = NamedTemporaryFile(
+        mode="w", encoding="utf-8-sig", newline="", dir=target.parent, delete=False
+    )
+    temporary = Path(file.name)
+    try:
+        with file:
+            writer = csv.writer(file)
+            writer.writerow(SNAPSHOT_COLUMNS)
+            for metric in SNAPSHOT_METRICS:
+                for month, terminal, *details, value in series[metric]:
+                    berth = details[0] if details else ""
+                    writer.writerow([metric, month, terminal, berth, value])
+        read_dashboard_data(temporary, temporary.stat().st_mtime_ns)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_eda_outputs(path, modified_time):
@@ -201,3 +246,7 @@ def build_occupancy_bar(rows, x_label):
         fig.update_traces(width=0.45)
         return fig
     return fig
+
+if __name__ == "__main__":
+    export_dashboard_data(NOTEBOOK, DATA_SNAPSHOT)
+    print(f"대시보드 데이터 저장 완료: {DATA_SNAPSHOT}")
