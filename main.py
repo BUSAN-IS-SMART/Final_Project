@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 from dashboard import (
     NOTEBOOK,
