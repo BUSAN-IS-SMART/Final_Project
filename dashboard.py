@@ -8,6 +8,8 @@ from tempfile import NamedTemporaryFile
 
 import pandas as pd
 import plotly.express as px
+from google import genai
+from google.genai import types
 
 ROOT = Path(__file__).resolve().parent
 EDA = Path(os.getenv("BUSAN_EDA_DIR", ROOT / "EDA"))
@@ -15,6 +17,18 @@ NOTEBOOK = EDA / "dashboard0.ipynb"
 DATA_SNAPSHOT = ROOT / "data" / "dashboard_snapshot.csv"
 SNAPSHOT_METRICS = ("occupancy", "productivity", "average_wait", "monthly_slots")
 SNAPSHOT_COLUMNS = ("metric", "month", "terminal", "berth", "value")
+
+
+KPI_SPECS = (
+    ("occupancy", "선석 점유율", "%", "#15803d"),
+    ("productivity", "체류 생산성", " TEU/h", "#2563eb"),
+    ("average_wait", "평균 대기시간", "시간", "#dc2626"),
+)
+
+OCCUPANCY_CAUTION = 75.9
+OCCUPANCY_RISK = 80.9
+
+RETRYABLE_GEMINI_ERRORS = [500, 502, 503, 504]
 
 
 def read_dashboard_data(path, modified_time):
@@ -138,16 +152,6 @@ def read_eda_outputs(path, modified_time):
     }
 
 
-KPI_SPECS = (
-    ("occupancy", "선석 점유율", "%", "#15803d"),
-    ("productivity", "체류 생산성", " TEU/h", "#2563eb"),
-    ("average_wait", "평균 대기시간", "시간", "#dc2626"),
-)
-
-OCCUPANCY_CAUTION = 75.9
-OCCUPANCY_RISK = 80.9
-
-
 def occupancy_status(value):
     if value >= OCCUPANCY_RISK:
         return "위험"
@@ -240,12 +244,53 @@ def build_occupancy_bar(rows, x_label):
                 for slot, _ in rows
             ],
         )
+    fig.update_traces(width=0.45)
     for label, value in rows:
         if value is None:
             fig.add_annotation(x=label, y=0, yshift=10, text="자료 없음", showarrow=False)
-        fig.update_traces(width=0.45)
-        return fig
     return fig
+
+
+def generate_ai_summary(key, series):
+    data = {
+        "부두별 선석 점유율 (월, 부두, %)": series["occupancy"],
+        "부두별 체류 생산성 (월, 부두, TEU/h)": series["productivity"],
+        "부두별 추정 대기시간 (월, 부두, 시간)": series["average_wait"],
+        "선석별 점유율 (월, 부두, 선석, %)": series["monthly_slots"],
+    }
+    prompt = (
+        "부산 신항 운영 대시보드 데이터를 한국어로 요약하세요. "
+        "아래 월별 데이터를 근거로 체류 생산성, 선석 점유율, "
+        "평균 추정 대기시간의 변화와 부두 간 차이를 설명하세요. "
+        "1부두의 선석 점유율 결과를 우선하고, 월별 값과 전체 기간 값을 구분하세요. "
+        "수치를 제시할 때는 부두, 기간, 단위를 함께 적으세요. "
+        "확인되지 않은 수치나 원인은 추측하지 마세요. "
+        "수치는 소수점 둘째 자리까지 표시하고 결측값(null)은 자료 없음으로 해석하세요. "
+        "제목이나 서론 없이 최대 5개 항목으로 구성되도록 요약하세요. "
+        "요약 문장 외의 다른 문장은 포함하지 마세요. "
+        "각 항목은 '- '로 시작하는 한 문장으로 작성하세요."
+        "\n\n대시보드 월별 데이터\n"
+        + json.dumps(data, ensure_ascii=False)
+    )
+
+    http_options = types.HttpOptions(
+        retry_options=types.HttpRetryOptions(
+            attempts=2,
+            initial_delay=2.0,
+            http_status_codes=RETRYABLE_GEMINI_ERRORS,
+        )
+    )
+    with genai.Client(api_key=key, http_options=http_options) as client:
+        result = client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=prompt,
+        )
+
+    summary = (result.text or "").strip()
+    if not summary:
+        raise ValueError("응답에 요약 텍스트가 없습니다.")
+    return summary
+
 
 if __name__ == "__main__":
     export_dashboard_data(NOTEBOOK, DATA_SNAPSHOT)
