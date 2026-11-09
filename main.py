@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +12,8 @@ from dashboard import (
     KPI_SPECS,
     OCCUPANCY_CAUTION,
     OCCUPANCY_RISK,
+    RETRYABLE_GEMINI_ERRORS,
+    generate_ai_summary,
     build_kpi_chart,
     build_occupancy_bar,
     kpi_delta,
@@ -21,54 +22,17 @@ from dashboard import (
     read_dashboard_data,
 )
 
-from google import genai
-from google.genai import types
+
+ROOT = Path(__file__).resolve().parent
 
 
-RETRYABLE_GEMINI_ERRORS = [500, 502, 503, 504]
-
-
-def generate_ai_summary(key, series):
-    data = {
-        "부두별 선석 점유율 (월, 부두, %)": series["occupancy"],
-        "부두별 체류 생산성 (월, 부두, TEU/h)": series["productivity"],
-        "부두별 추정 대기시간 (월, 부두, 시간)": series["average_wait"],
-        "선석별 점유율 (월, 부두, 선석, %)": series["monthly_slots"],
-    }
-    prompt = (
-        "부산 신항 운영 대시보드 데이터를 한국어로 요약하세요. "
-        "아래 월별 데이터를 근거로 체류 생산성, 선석 점유율, "
-        "평균 추정 대기시간의 변화와 부두 간 차이를 설명하세요. "
-        "1부두의 선석 점유율 결과를 우선하고, 월별 값과 전체 기간 값을 구분하세요. "
-        "수치를 제시할 때는 부두, 기간, 단위를 함께 적으세요. "
-        "확인되지 않은 수치나 원인은 추측하지 마세요. "
-        "수치는 소수점 둘째 자리까지 표시하고 결측값(null)은 자료 없음으로 해석하세요. "
-        "제목이나 서론 없이 최대 5개 항목으로 구성되도록 요약하세요. "
-        "요약 문장 외의 다른 문장은 포함하지 마세요. "
-        "각 항목은 '- '로 시작하는 한 문장으로 작성하세요."
-        "\n\n대시보드 월별 데이터\n"
-        + json.dumps(data, ensure_ascii=False)
-    )
-
-    http_options = types.HttpOptions(
-        retry_options=types.HttpRetryOptions(
-            attempts=2,
-            initial_delay=2.0,
-            http_status_codes=RETRYABLE_GEMINI_ERRORS,
-        )
-    )
-    with genai.Client(api_key=key, http_options=http_options) as client:
-        result = client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=prompt,
-        )
-
-
-    summary = (result.text or "").strip()
-    if not summary:
-        raise ValueError("응답에 요약 텍스트가 없습니다.")
-    return summary
-
+PAGE_HEADER = """
+<div class="hero"><div class="hero-main">
+<div class="hero-kicker">BUSAN NEW PORT / OPERATIONS</div>
+<div class="hero-title">부산 신항 처리 효율 개선 방안</div>
+<div class="hero-copy">부산 신항 부두별 선석 운영과 처리 생산성</div>
+</div></div>
+"""
 
 def render_ai_summary(series):
     state_key = "eda_overview_ai_summary"
@@ -178,38 +142,41 @@ def render_berth_comparison(series):
             ),
             key="overall_occupancy",
         )
-        end = pd.Period(month, freq="M")
-        prior_start, prior_end = end - 12, end - 1
-        rows = []
-        for terminal in berths:
-            row = {"부두": terminal}
-            for key, title, unit, _ in KPI_SPECS:
-                value, _ = kpi_period(series, terminal, key, end, end)
-                previous, _ = kpi_period(series, terminal, key, prior_start, prior_end)
-                cell = escape(kpi_text(value, unit))
-                if value is not None:
-                    delta = kpi_delta(key, value, previous)
-                    badge = delta_badge(key, delta)
-                    cell += " " + (badge or f'<span class="kpi-delta-badge neutral">{escape(delta)}</span>')
-                row[title] = cell
-            rows.append(row)
-        st.caption(
-            f"증감 기준 · 기준월 {month}의 값과 기준월을 제외한 직전 12개월 "
-            f"({prior_start} ~ {prior_end})의 월평균을 비교. 대기시간은 연결된 입항 기록 기준."
-        )
-        headings = "".join(f"<th scope='col'>{escape(label)}</th>" for label in rows[0])
-        body = "".join(
-            f"<tr><th scope='row'>{escape(row['부두'])}</th>"
-            + "".join(f"<td>{row[title]}</td>" for _, title, _, _ in KPI_SPECS)
-            + "</tr>"
-            for row in rows
-        )
-        st.markdown(
-            f'<div class="kpi-comparison-wrap"><table class="kpi-comparison">'
-            f"<thead><tr>{headings}</tr></thead><tbody>{body}</tbody></table></div>",
-            unsafe_allow_html=True,
-        )
+        render_comparison_table(series, berths, month)
 
+
+def render_comparison_table(series, berths, month):
+    end = pd.Period(month, freq="M")
+    prior_start, prior_end = end - 12, end - 1
+    rows = []
+    for terminal in berths:
+        row = {"부두": terminal}
+        for key, title, unit, _ in KPI_SPECS:
+            value, _ = kpi_period(series, terminal, key, end, end)
+            previous, _ = kpi_period(series, terminal, key, prior_start, prior_end)
+            cell = escape(kpi_text(value, unit))
+            if value is not None:
+                delta = kpi_delta(key, value, previous)
+                badge = delta_badge(key, delta)
+                cell += " " + (badge or f'<span class="kpi-delta-badge neutral">{escape(delta)}</span>')
+            row[title] = cell
+        rows.append(row)
+    st.caption(
+        f"증감 기준 · 기준월 {month}의 값과 기준월을 제외한 직전 12개월 "
+        f"({prior_start} ~ {prior_end})의 월평균을 비교. 대기시간은 연결된 입항 기록 기준."
+    )
+    headings = "".join(f"<th scope='col'>{escape(label)}</th>" for label in rows[0])
+    body = "".join(
+        f"<tr><th scope='row'>{escape(row['부두'])}</th>"
+        + "".join(f"<td>{row[title]}</td>" for _, title, _, _ in KPI_SPECS)
+        + "</tr>"
+        for row in rows
+    )
+    st.markdown(
+        f'<div class="kpi-comparison-wrap"><table class="kpi-comparison">'
+        f"<thead><tr>{headings}</tr></thead><tbody>{body}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
 
 def render_kpi_panel(series):
     months = sorted({month for month, _, _ in series["occupancy"]}, reverse=True)
@@ -226,37 +193,8 @@ def render_kpi_panel(series):
         st.caption(f"{month} 월별 KPI · 직전 12개월 월평균과 비교 ({prior_start} ~ {prior_end}) · 대기시간은 연결된 입항 기록 기준 추정값")
 
         for col, (key, title, unit, color) in zip(st.columns(3, border=True), KPI_SPECS):
-            value, _ = kpi_period(series, berth, key, end, end)
-            previous, _ = kpi_period(series, berth, key, prior_start, prior_end)
-            delta = kpi_delta(key, value, previous)
-            fig = build_kpi_chart(series, berth, key, title, color, month)
-            with col.container(key=f"kpi_card_{key}"):
-                st.markdown(f"#### **{title}**")
-                st.markdown(f"## {kpi_text(value, unit)}")
-                detail = f"직전 12개월 평균 대비 {delta}" if delta.startswith(("+", "-")) else delta
-                if key == "occupancy" and value is not None:
-                    status = occupancy_status(value)
-                    tone = {"유지": "positive", "주의": "caution", "위험": "negative"}[status]
-                    st.caption(
-                        f'<span class="kpi-delta-badge occupancy-status {tone}">{status}</span>'
-                        f" · {escape(detail)}",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.caption(detail)
-                st.markdown(f'<div class="kpi-accent" style="background:{color}"></div>',
-                            unsafe_allow_html=True)
-                if fig is not None:
-                    st.plotly_chart(fig, key=f"mini_{key}")
-                    if key == "occupancy":
-                        st.caption(
-                            f"유지 {OCCUPANCY_CAUTION:g}% 미만 · "
-                            f"주의 {OCCUPANCY_CAUTION:g}% 이상 {OCCUPANCY_RISK:g}% 미만 · "
-                            f"위험 {OCCUPANCY_RISK:g}% 이상"
-                        )
-                else:
-                    st.caption("선택 기간의 월별 자료가 없습니다.")
-
+            with col:
+                render_kpi_card(series, berth, month, key, title, unit, color)
 
         st.markdown(f"#### {berth} 선석별 점유율")
         st.caption(f"기준월 {month}")
@@ -267,6 +205,40 @@ def render_kpi_panel(series):
         ]
         st.plotly_chart(build_occupancy_bar(slot_rows, "선석"), key="slot_occupancy")
 
+
+def render_kpi_card(series, berth, month, key, title, unit, color):
+    end = pd.Period(month, freq="M")
+    prior_start, prior_end = end - 12, end - 1
+    value, _ = kpi_period(series, berth, key, end, end)
+    previous, _ = kpi_period(series, berth, key, prior_start, prior_end)
+    delta = kpi_delta(key, value, previous)
+    fig = build_kpi_chart(series, berth, key, title, color, month)
+    with st.container(key=f"kpi_card_{key}"):
+        st.markdown(f"#### **{title}**")
+        st.markdown(f"## {kpi_text(value, unit)}")
+        detail = f"직전 12개월 평균 대비 {delta}" if delta.startswith(("+", "-")) else delta
+        if key == "occupancy" and value is not None:
+            status = occupancy_status(value)
+            tone = {"유지": "positive", "주의": "caution", "위험": "negative"}[status]
+            st.caption(
+                f'<span class="kpi-delta-badge occupancy-status {tone}">{status}</span>'
+                f" · {escape(detail)}",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption(detail)
+        st.markdown(f'<div class="kpi-accent" style="background:{color}"></div>',
+                    unsafe_allow_html=True)
+        if fig is not None:
+            st.plotly_chart(fig, key=f"mini_{key}")
+            if key == "occupancy":
+                st.caption(
+                    f"유지 {OCCUPANCY_CAUTION:g}% 미만 · "
+                    f"주의 {OCCUPANCY_CAUTION:g}% 이상 {OCCUPANCY_RISK:g}% 미만 · "
+                    f"위험 {OCCUPANCY_RISK:g}% 이상"
+                )
+        else:
+            st.caption("선택 기간의 월별 자료가 없습니다.")
 
 def render_dashboard(series):
     overview, detail = st.tabs(("전체", "부두별"), key="dashboard_tabs")
@@ -280,24 +252,22 @@ def render_dashboard(series):
         render_kpi_panel(series)
 
 
-ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title="부산 신항 처리 효율 개선 방안", page_icon="⚓", layout="wide")
-st.markdown(f"<style>{(ROOT / 'styles.css').read_text(encoding='utf-8')}</style>",
-            unsafe_allow_html=True)
+def main():
+    st.set_page_config(page_title="부산 신항 처리 효율 개선 방안", page_icon="⚓", layout="wide")
+    st.markdown(f"<style>{(ROOT / 'styles.css').read_text(encoding='utf-8')}</style>",
+                unsafe_allow_html=True)
 
-try:
-    series = st.cache_data(read_dashboard_data)(DATA_SNAPSHOT, DATA_SNAPSHOT.stat().st_mtime_ns)
-except (OSError, ValueError, KeyError) as exc:
-    st.error("대시보드 데이터를 읽을 수 없습니다. data/dashboard_snapshot.csv 파일을 확인해 주세요.")
-    st.caption(str(exc))
-    st.stop()
+    try:
+        series = st.cache_data(read_dashboard_data)(DATA_SNAPSHOT, DATA_SNAPSHOT.stat().st_mtime_ns)
+    except (OSError, ValueError, KeyError) as exc:
+        st.error("대시보드 데이터를 읽을 수 없습니다.")
+        st.caption(str(exc))
+        st.stop()
 
-st.markdown("""
-<div class="hero"><div class="hero-main">
-<div class="hero-kicker">BUSAN NEW PORT / OPERATIONS</div>
-<div class="hero-title">부산 신항 처리 효율 개선 방안</div>
-<div class="hero-copy">부산 신항 부두별 선석 운영과 처리 생산성</div>
-</div></div>
-""", unsafe_allow_html=True)
+    st.markdown(PAGE_HEADER, unsafe_allow_html=True)
 
-render_dashboard(series)
+    render_dashboard(series)
+
+
+if __name__ == "__main__":
+    main()
