@@ -164,7 +164,7 @@ def render_comparison_table(series, berths, month):
         rows.append(row)
     st.caption(
         f"증감 기준 · 기준월 {month}의 값과 기준월을 제외한 직전 12개월 "
-        f"({prior_start} ~ {prior_end})의 월평균을 비교. 대기시간은 연결된 입항 기록 기준."
+        f"({prior_start} ~ {prior_end})의 월평균을 비교."
     )
     headings = "".join(f"<th scope='col'>{escape(label)}</th>" for label in rows[0])
     body = "".join(
@@ -191,7 +191,7 @@ def render_kpi_panel(series):
         end = pd.Period(month, freq="M")
         prior_start = end - 12
         prior_end = end - 1
-        st.caption(f"{month} 월별 KPI · 직전 12개월 월평균과 비교 ({prior_start} ~ {prior_end}) · 대기시간은 연결된 입항 기록 기준 추정값")
+        st.caption(f"{month} 월별 KPI · 직전 12개월 월평균과 비교 ({prior_start} ~ {prior_end})")
 
         for col, (key, title, unit, color) in zip(st.columns(3, border=True), KPI_SPECS):
             with col:
